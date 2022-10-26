@@ -1,0 +1,107 @@
+name: Docker Build - ACR
+on: 
+  workflow_call:
+    inputs:
+      checkout-ref:
+        type: string
+        required: false
+        default: main 
+      dockerfile-context: 
+        type: string
+        required: false
+        default: "."
+      acr-image-name: 
+        type: string
+        required: true
+      build-platforms: 
+        type: string
+        required: false
+        default: "linux/amd64"
+      trivy-format: 
+        type: string
+        required: false
+        default: "table"
+      trivy-ec:
+        type: string
+        required: false
+        default: "1"
+      trivy-vuln: 
+        type: string
+        required: false
+        default: "os,library"
+      trivy-severity: 
+        type: string
+        required: false
+        default: "CRITICAL,HIGH"
+      trivy-ignore-unfixed:
+        type: boolean
+        required: false 
+        default: false
+        
+    secrets: 
+      acr-username: 
+        required: true
+      acr-password: 
+        required: true
+      login-server:
+        required: true      
+jobs:
+  acr-docker-build:
+    # Can use self-hosted runners here! 
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with: 
+          ref: ${{ input.checkout-ref }}
+
+      - name: Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v2.2.0
+
+      - name: ACR Login
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.login-server }}
+          username: ${{ secrets.acr-username }}
+          password: ${{ secrets.acr-password }}
+
+      - name: Lint
+        uses: hadolint/hadolint-action@v2.0.0
+        with:
+          dockerfile: ${{ inputs.dockerfile-context }}/Dockerfile
+
+      - name: Docker Metadata
+        id: data
+        uses: docker/metadata-action@v4.1.0
+        with:
+          images: |
+            ${{ secrets.login-server }}/${{ inputs.acr-image-name }}
+          tags: |
+            type=sha,format=long
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      
+      - name: Build and Push
+        uses: docker/build-push-action@v3.2.0
+        if: ${{ github.event_name != 'pull_request' }} || ${{ github.actor != 'dependabot[bot]' }}
+        with:
+          context: ${{ inputs.dockerfile-context }}
+          platforms: ${{ inputs.build-platforms }}
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          push: ${{ github.event_name != 'pull_request'}}
+          tags: ${{ steps.data.outputs.tags }}
+          labels: ${{ steps.data.outputs.label}}
+
+      - name: Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        if: ${{ github.event_name != 'pull_request' }} || ${{ github.actor != 'dependabot[bot]' }}
+        with:
+          image-ref: "${{ steps.data.outputs.tags }}"
+          format: "${{ inputs.trivy-format }}"
+          exit-code: "${{ inputs.trivy-ec }}"
+          ignore-unfixed: ${{ inputs.trivy-ignore-unfinxed }}
+          vuln-type: "${{ inputs.trivy-vuln }}"
+          severity: "${{ inputs.trivy-severity }}"
